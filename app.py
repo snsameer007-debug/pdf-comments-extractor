@@ -11,6 +11,9 @@ st.set_page_config(
 )
 
 st.title("PDF Comment Extractor")
+debug_mode = st.checkbox(
+    "Debug Mode"
+)
 
 uploaded_file = st.file_uploader(
     "Upload PDF",
@@ -41,6 +44,25 @@ if uploaded_file:
 
         while annot:
 
+    if debug_mode:
+
+        st.write(
+            "PAGE:",
+            page_num + 1
+        )
+
+        st.write(
+            "TYPE:",
+            annot.type
+        )
+
+        try:
+            st.write(
+                "INFO:",
+                annot.info
+            )
+        except:
+            pass
             try:
 
                 annotation_type = annot.type[1]
