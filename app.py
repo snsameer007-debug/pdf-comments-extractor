@@ -115,20 +115,19 @@ if uploaded_file:
                         "date": date
                     }
                 )
+                      except Exception as ex:
 
-          except Exception as ex:
+                all_items.append(
+                    {
+                        "xref": "",
+                        "reply_to": None,
+                        "page": page_num + 1,
+                        "author": "",
+                        "type": "ERROR",
+                        "subject": "",
+                        "comment": str(ex),
+                        "date": ""
+                    }
+                )
 
-    all_items.append(
-        {
-            "xref": "",
-            "reply_to": None,
-            "page": page_num + 1,
-            "author": "",
-            "type": "ERROR",
-            "subject": "",
-            "comment": str(ex),
-            "date": ""
-        }
-    )
-    
-    annot = annot.next
+            annot = annot.next
