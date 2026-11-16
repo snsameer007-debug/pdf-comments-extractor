@@ -2,16 +2,15 @@ import streamlit as st
 import fitz
 import pandas as pd
 from io import BytesIO
-from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 st.set_page_config(
-    page_title="PDF Comments Extractor",
+    page_title="PDF Comment Extractor",
     layout="wide"
 )
 
-st.title("PDF Comments Extractor")
+st.title("PDF Comment Extractor")
 
 uploaded_file = st.file_uploader(
     "Upload PDF",
@@ -20,50 +19,23 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
 
-    pdf_bytes = uploaded_file.read()
+    pdf_data = uploaded_file.read()
 
     doc = fitz.open(
-        stream=pdf_bytes,
+        stream=pdf_data,
         filetype="pdf"
     )
 
-    st.subheader("PDF Preview")
-
-    page_to_show = st.number_input(
-        "Page Number",
-        min_value=1,
-        max_value=len(doc),
-        value=1
-    )
-
-    page = doc[page_to_show - 1]
-
-    pix = page.get_pixmap(
-        matrix=fitz.Matrix(2, 2)
-    )
-
-    img = Image.frombytes(
-        "RGB",
-        [pix.width, pix.height],
-        pix.samples
-    )
-
-    st.image(
-        img,
-        caption=f"Page {page_to_show}",
-        use_container_width=True
-    )
+    all_items = []
 
     ignore_types = [
         "Stamp",
         "Square"
     ]
 
-    all_annotations = []
+    for page_num in range(len(doc)):
 
-    for page_no in range(len(doc)):
-
-        page = doc[page_no]
+        page = doc[page_num]
 
         annot = page.first_annot
 
@@ -74,24 +46,24 @@ if uploaded_file:
                 annotation_type = annot.type[1]
 
                 if annotation_type in ignore_types:
+
                     annot = annot.next
                     continue
 
                 info = annot.info
 
-                author = info.get(
-                    "title",
-                    ""
+                content = (
+                    info.get("content", "")
+                    or info.get("subject", "")
+                    or ""
                 )
 
-                comment = info.get(
-                    "content",
-                    ""
+                author = (
+                    info.get("title", "")
                 )
 
-                date = info.get(
-                    "creationDate",
-                    ""
+                date = (
+                    info.get("creationDate", "")
                 )
 
                 parent_xref = None
@@ -100,67 +72,77 @@ if uploaded_file:
 
                     parent_xref = annot.irt_xref
 
-                except:
+                except Exception:
 
                     parent_xref = None
 
-                all_annotations.append(
+                all_items.append(
                     {
                         "xref": annot.xref,
                         "reply_to": parent_xref,
-                        "Page": page_no + 1,
-                        "Author": author,
-                        "Type": annotation_type,
-                        "Comment": comment,
-                        "Date": date
+                        "page": page_num + 1,
+                        "author": author,
+                        "type": annotation_type,
+                        "comment": content,
+                        "date": date
                     }
                 )
 
             except Exception as ex:
 
-                st.warning(str(ex))
+                all_items.append(
+                    {
+                        "xref": "",
+                        "reply_to": "",
+                        "page": page_num + 1,
+                        "author": "",
+                        "type": "ERROR",
+                        "comment": str(ex),
+                        "date": ""
+                    }
+                )
 
             annot = annot.next
 
-    final_rows = []
+    results = []
 
-    for item in all_annotations:
+    for item in all_items:
 
         if item["reply_to"] is not None:
             continue
 
         replies = []
 
-        repliers = []
+        reply_authors = []
 
-        for candidate in all_annotations:
+        for child in all_items:
 
-            if candidate["reply_to"] == item["xref"]:
+            if child["reply_to"] == item["xref"]:
 
                 replies.append(
-                    candidate["Comment"]
+                    child["comment"]
                 )
 
-                repliers.append(
-                    candidate["Author"]
+                reply_authors.append(
+                    child["author"]
                 )
 
-        final_rows.append(
+        results.append(
             {
-                "Page": item["Page"],
-                "Author": item["Author"],
-                "Type": item["Type"],
-                "Comment": item["Comment"],
+                "Page": item["page"],
+                "Author": item["author"],
+                "Type": item["type"],
+                "Comment": item["comment"],
                 "Response": "\n\n".join(replies),
-                "Responded By": "\n".join(repliers),
-                "Date": item["Date"]
+                "Responded By": "\n".join(reply_authors),
+                "Date": item["date"]
             }
         )
 
-    df = pd.DataFrame(final_rows)
+    df = pd.DataFrame(results)
 
     st.success(
-        f"Found {len(df)} comments"
+        f"{len(df)} records extracted"
     )
 
     st.dataframe(
@@ -168,10 +150,10 @@ if uploaded_file:
         use_container_width=True
     )
 
-    output = BytesIO()
+    excel_buffer = BytesIO()
 
     with pd.ExcelWriter(
-        output,
+        excel_buffer,
         engine="openpyxl"
     ) as writer:
 
@@ -181,9 +163,9 @@ if uploaded_file:
             sheet_name="Comments"
         )
 
-    output.seek(0)
+    excel_buffer.seek(0)
 
-    wb = load_workbook(output)
+    wb = load_workbook(excel_buffer)
 
     ws = wb["Comments"]
 
@@ -194,17 +176,16 @@ if uploaded_file:
 
     for cell in ws[1]:
 
+        cell.fill = header_fill
+
         cell.font = Font(
             bold=True,
             color="FFFFFF"
         )
 
-        cell.fill = header_fill
-
         cell.alignment = Alignment(
             wrap_text=True,
-            horizontal="center",
-            vertical="center"
+            horizontal="center"
         )
 
     for row in ws.iter_rows():
@@ -216,28 +197,22 @@ if uploaded_file:
                 vertical="top"
             )
 
-    for col in ws.columns:
+    for column in ws.columns:
 
         max_length = 0
 
-        column = col[0].column_letter
+        col_letter = column[0].column_letter
 
-        for cell in col:
+        for cell in column:
 
-            try:
+            value = str(cell.value)
 
-                length = len(
-                    str(cell.value)
-                )
+            if len(value) > max_length:
 
-                if length > max_length:
-                    max_length = length
-
-            except:
-                pass
+                max_length = len(value)
 
         ws.column_dimensions[
-            column
+            col_letter
         ].width = min(
             max_length + 5,
             80
@@ -245,15 +220,15 @@ if uploaded_file:
 
     ws.freeze_panes = "A2"
 
-    final_excel = BytesIO()
+    final_file = BytesIO()
 
-    wb.save(final_excel)
+    wb.save(final_file)
 
-    final_excel.seek(0)
+    final_file.seek(0)
 
     st.download_button(
-        label="Download Excel",
-        data=final_excel,
-        file_name="PDF_Comments.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "Download Excel",
+        final_file,
+        "PDF_Comments.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
