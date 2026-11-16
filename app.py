@@ -2,7 +2,7 @@ import streamlit as st
 import fitz
 import pandas as pd
 from io import BytesIO
-import base64
+from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -22,43 +22,45 @@ if uploaded_file:
 
     pdf_bytes = uploaded_file.read()
 
-    # PDF Preview
-    st.subheader("PDF Preview")
-
-    try:
-        pdf_base64 = base64.b64encode(pdf_bytes).decode()
-
-        pdf_viewer = f"""
-        <iframe
-        src="data:application/pdf;base64,{pdf_base64}"
-        width="100%"
-        height="900">
-        </iframe>
-        """
-
-        st.markdown(
-            pdf_viewer,
-            unsafe_allow_html=True
-        )
-
-    except Exception:
-        st.warning("Unable to preview PDF")
-
     doc = fitz.open(
         stream=pdf_bytes,
         filetype="pdf"
     )
 
-    IGNORE_TYPES = [
+    st.subheader("PDF Preview")
+
+    page_to_show = st.number_input(
+        "Page Number",
+        min_value=1,
+        max_value=len(doc),
+        value=1
+    )
+
+    page = doc[page_to_show - 1]
+
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(2, 2)
+    )
+
+    img = Image.frombytes(
+        "RGB",
+        [pix.width, pix.height],
+        pix.samples
+    )
+
+    st.image(
+        img,
+        caption=f"Page {page_to_show}",
+        use_container_width=True
+    )
+
+    ignore_types = [
         "Stamp",
         "Square"
     ]
 
-    annotations = []
+    all_annotations = []
 
-    annotation_counter = 0
-
-    # First Pass
     for page_no in range(len(doc)):
 
         page = doc[page_no]
@@ -67,193 +69,191 @@ if uploaded_file:
 
         while annot:
 
-            annotation_type = annot.type[1]
+            try:
 
-            if annotation_type not in IGNORE_TYPES:
+                annotation_type = annot.type[1]
+
+                if annotation_type in ignore_types:
+                    annot = annot.next
+                    continue
 
                 info = annot.info
 
-                annotation_counter += 1
+                author = info.get(
+                    "title",
+                    ""
+                )
 
-                record = {
-                    "internal_id": annotation_counter,
-                    "page": page_no + 1,
-                    "author": info.get("title", ""),
-                    "comment": info.get("content", ""),
-                    "type": annotation_type,
-                    "date": info.get("creationDate", ""),
-                    "xref": annot.xref,
-                    "reply_to": None
-                }
+                comment = info.get(
+                    "content",
+                    ""
+                )
+
+                date = info.get(
+                    "creationDate",
+                    ""
+                )
+
+                parent_xref = None
 
                 try:
 
-                    parent = annot.irt_xref
+                    parent_xref = annot.irt_xref
 
-                    if parent:
-                        record["reply_to"] = parent
+                except:
 
-                except Exception:
-                    pass
+                    parent_xref = None
 
-                annotations.append(record)
+                all_annotations.append(
+                    {
+                        "xref": annot.xref,
+                        "reply_to": parent_xref,
+                        "Page": page_no + 1,
+                        "Author": author,
+                        "Type": annotation_type,
+                        "Comment": comment,
+                        "Date": date
+                    }
+                )
+
+            except Exception as ex:
+
+                st.warning(str(ex))
 
             annot = annot.next
 
-    # Build lookup
-    xref_map = {}
+    final_rows = []
 
-    for item in annotations:
-        xref_map[item["xref"]] = item
-
-    output_rows = []
-
-    for item in annotations:
+    for item in all_annotations:
 
         if item["reply_to"] is not None:
             continue
 
         replies = []
 
-        reply_authors = []
+        repliers = []
 
-        for candidate in annotations:
+        for candidate in all_annotations:
 
             if candidate["reply_to"] == item["xref"]:
 
-                if candidate["comment"]:
-
-                    replies.append(
-                        candidate["comment"]
-                    )
-
-                if candidate["author"]:
-
-                    reply_authors.append(
-                        candidate["author"]
-                    )
-
-        output_rows.append(
-
-            {
-                "Page": item["page"],
-                "Author": item["author"],
-                "Type": item["type"],
-                "Comment": item["comment"],
-                "Response":
-                    "\n------------------\n".join(replies),
-                "Responded By":
-                    "\n".join(reply_authors),
-                "Date": item["date"]
-            }
-
-        )
-
-    st.success(
-        f"Extracted {len(output_rows)} primary comments"
-    )
-
-    if len(output_rows) > 0:
-
-        df = pd.DataFrame(output_rows)
-
-        excel_buffer = BytesIO()
-
-        with pd.ExcelWriter(
-            excel_buffer,
-            engine="openpyxl"
-        ) as writer:
-
-            df.to_excel(
-                writer,
-                index=False,
-                sheet_name="Comments"
-            )
-
-        excel_buffer.seek(0)
-
-        wb = load_workbook(excel_buffer)
-
-        ws = wb["Comments"]
-
-        header_fill = PatternFill(
-            "solid",
-            fgColor="1F4E78"
-        )
-
-        for cell in ws[1]:
-
-            cell.font = Font(
-                bold=True,
-                color="FFFFFF"
-            )
-
-            cell.fill = header_fill
-
-            cell.alignment = Alignment(
-                horizontal="center",
-                vertical="center",
-                wrap_text=True
-            )
-
-        for row in ws.iter_rows():
-
-            for cell in row:
-
-                cell.alignment = Alignment(
-                    wrap_text=True,
-                    vertical="top"
+                replies.append(
+                    candidate["Comment"]
                 )
 
-        for col in ws.columns:
+                repliers.append(
+                    candidate["Author"]
+                )
 
-            max_len = 0
+        final_rows.append(
+            {
+                "Page": item["Page"],
+                "Author": item["Author"],
+                "Type": item["Type"],
+                "Comment": item["Comment"],
+                "Response": "\n\n".join(replies),
+                "Responded By": "\n".join(repliers),
+                "Date": item["Date"]
+            }
+        )
 
-            column = col[0].column_letter
+    df = pd.DataFrame(final_rows)
 
-            for cell in col:
+    st.success(
+        f"Found {len(df)} comments"
+    )
 
-                try:
+    st.dataframe(
+        df,
+        use_container_width=True
+    )
 
-                    value_len = len(
-                        str(cell.value)
-                    )
+    output = BytesIO()
 
-                    if value_len > max_len:
-                        max_len = value_len
+    with pd.ExcelWriter(
+        output,
+        engine="openpyxl"
+    ) as writer:
 
-                except Exception:
-                    pass
+        df.to_excel(
+            writer,
+            index=False,
+            sheet_name="Comments"
+        )
 
-            ws.column_dimensions[
-                column
-            ].width = min(
-                max_len + 5,
-                70
+    output.seek(0)
+
+    wb = load_workbook(output)
+
+    ws = wb["Comments"]
+
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="1F4E78"
+    )
+
+    for cell in ws[1]:
+
+        cell.font = Font(
+            bold=True,
+            color="FFFFFF"
+        )
+
+        cell.fill = header_fill
+
+        cell.alignment = Alignment(
+            wrap_text=True,
+            horizontal="center",
+            vertical="center"
+        )
+
+    for row in ws.iter_rows():
+
+        for cell in row:
+
+            cell.alignment = Alignment(
+                wrap_text=True,
+                vertical="top"
             )
 
-        ws.freeze_panes = "A2"
+    for col in ws.columns:
 
-        final_excel = BytesIO()
+        max_length = 0
 
-        wb.save(final_excel)
+        column = col[0].column_letter
 
-        final_excel.seek(0)
+        for cell in col:
 
-        st.download_button(
-            "Download Excel",
-            data=final_excel,
-            file_name="PDF_Comments.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            try:
+
+                length = len(
+                    str(cell.value)
+                )
+
+                if length > max_length:
+                    max_length = length
+
+            except:
+                pass
+
+        ws.column_dimensions[
+            column
+        ].width = min(
+            max_length + 5,
+            80
         )
 
-        st.dataframe(
-            df,
-            use_container_width=True
-        )
+    ws.freeze_panes = "A2"
 
-    else:
+    final_excel = BytesIO()
 
-        st.warning(
-            "No comments found."
-        )
+    wb.save(final_excel)
+
+    final_excel.seek(0)
+
+    st.download_button(
+        label="Download Excel",
+        data=final_excel,
+        file_name="PDF_Comments.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
