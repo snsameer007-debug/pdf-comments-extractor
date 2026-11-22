@@ -26,16 +26,16 @@ if uploaded_file:
         filetype="pdf"
     )
 
-    ignore_types = [
+    IGNORE_TYPES = {
         "Stamp",
         "Square"
-    ]
+    }
 
-    ignore_authors = [
+    IGNORE_AUTHORS = {
         "AutoCAD SHX Text"
-    ]
+    }
 
-    all_items = []
+    all_comments = []
 
     for page_num in range(len(doc)):
 
@@ -47,9 +47,9 @@ if uploaded_file:
 
             try:
 
-                annotation_type = annot.type[1]
+                annot_type = annot.type[1]
 
-                if annotation_type in ignore_types:
+                if annot_type in IGNORE_TYPES:
                     annot = annot.next
                     continue
 
@@ -59,13 +59,9 @@ if uploaded_file:
                     info.get("title", "")
                 ).strip()
 
-                if author in ignore_authors:
+                if author in IGNORE_AUTHORS:
                     annot = annot.next
                     continue
-
-                date = str(
-                    info.get("creationDate", "")
-                ).strip()
 
                 subject = str(
                     info.get("subject", "")
@@ -75,90 +71,105 @@ if uploaded_file:
                     info.get("content", "")
                 ).strip()
 
-                comment = ""
+                creation_date = str(
+                    info.get("creationDate", "")
+                ).strip()
 
-                for value in [content, subject]:
+                comment_text = ""
 
-                    if value:
-                        comment = value
-                        break
+                if content:
+                    comment_text = content
 
-                if not comment:
-                    comment = str(info)
+                elif subject:
+                    comment_text = subject
+
+                else:
+                    comment_text = str(info)
 
                 parent_xref = None
 
                 try:
                     parent_xref = annot.irt_xref
-                except Exception:
-                    parent_xref = None
+                except:
+                    pass
 
-                all_items.append(
-                    {
-                        "xref": annot.xref,
-                        "reply_to": parent_xref,
-                        "page": page_num + 1,
-                        "author": author,
-                        "type": annotation_type,
-                        "subject": subject,
-                        "comment": comment,
-                        "date": date
-                    }
-                )
+                all_comments.append({
+                    "xref": annot.xref,
+                    "reply_to": parent_xref,
+                    "page": page_num + 1,
+                    "author": author,
+                    "type": annot_type,
+                    "subject": subject,
+                    "comment": comment_text,
+                    "date": creation_date
+                })
 
             except Exception as ex:
 
-                all_items.append(
-                    {
-                        "xref": "",
-                        "reply_to": None,
-                        "page": page_num + 1,
-                        "author": "",
-                        "type": "ERROR",
-                        "subject": "",
-                        "comment": str(ex),
-                        "date": ""
-                    }
-                )
+                all_comments.append({
+                    "xref": None,
+                    "reply_to": None,
+                    "page": page_num + 1,
+                    "author": "",
+                    "type": "ERROR",
+                    "subject": "",
+                    "comment": str(ex),
+                    "date": ""
+                })
 
             annot = annot.next
 
+    comment_map = {}
+
+    for item in all_comments:
+
+        comment_map[item["xref"]] = item
+
     results = []
 
-    for item in all_items:
+    for item in all_comments:
 
         if item["reply_to"] is not None:
             continue
 
         replies = []
-        reply_authors = []
+        replied_by = []
 
-        for child in all_items:
+        for child in all_comments:
 
             if child["reply_to"] == item["xref"]:
 
-                if child["comment"]:
-                    replies.append(
-                        child["comment"]
-                    )
+                replies.append(
+                    child["comment"]
+                )
 
-                if child["author"]:
-                    reply_authors.append(
-                        child["author"]
-                    )
+                replied_by.append(
+                    child["author"]
+                )
 
-        results.append(
-            {
-                "Page": item["page"],
-                "Author": item["author"],
-                "Type": item["type"],
-                "Subject": item["subject"],
-                "Comment": item["comment"],
-                "Response": "\n\n".join(replies),
-                "Responded By": "\n".join(reply_authors),
-                "Date": item["date"]
-            }
-        )
+        results.append({
+
+            "Page": item["page"],
+
+            "Author": item["author"],
+
+            "Type": item["type"],
+
+            "Subject": item["subject"],
+
+            "Comment": item["comment"],
+
+            "Response Count": len(replies),
+
+            "Responses":
+                "\n\n-------------------\n\n".join(replies),
+
+            "Responded By":
+                "\n".join(replied_by),
+
+            "Date": item["date"]
+
+        })
 
     df = pd.DataFrame(results)
 
@@ -190,14 +201,14 @@ if uploaded_file:
 
     ws = wb["Comments"]
 
-    header_fill = PatternFill(
+    dark_fill = PatternFill(
         fill_type="solid",
         fgColor="1F4E78"
     )
 
     for cell in ws[1]:
 
-        cell.fill = header_fill
+        cell.fill = dark_fill
 
         cell.font = Font(
             bold=True,
@@ -223,20 +234,25 @@ if uploaded_file:
 
         max_length = 0
 
-        column_letter = column[0].column_letter
+        letter = column[0].column_letter
 
         for cell in column:
 
-            value = str(cell.value)
+            try:
 
-            if len(value) > max_length:
-                max_length = len(value)
+                value = str(cell.value)
+
+                if len(value) > max_length:
+                    max_length = len(value)
+
+            except:
+                pass
 
         ws.column_dimensions[
-            column_letter
+            letter
         ].width = min(
             max_length + 5,
-            80
+            100
         )
 
     ws.freeze_panes = "A2"
