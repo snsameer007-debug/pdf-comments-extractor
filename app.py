@@ -1,9 +1,16 @@
 import streamlit as st
 import fitz
 import pandas as pd
+
 from io import BytesIO
+
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+
+from openpyxl.styles import (
+    Alignment,
+    Font,
+    PatternFill
+)
 
 st.set_page_config(
     page_title="PDF Comment Extractor",
@@ -17,29 +24,113 @@ uploaded_file = st.file_uploader(
     type=["pdf"]
 )
 
+# --------------------------------------------------
+# Helper Functions
+# --------------------------------------------------
+
+IGNORE_TYPES = {
+    "Stamp",
+    "Square"
+}
+
+IGNORE_AUTHORS = {
+    "AutoCAD SHX Text"
+}
+
+
+def clean_value(value):
+
+    if value is None:
+        return ""
+
+    value = str(value)
+
+    value = value.replace("\r", " ")
+    value = value.replace("\n", " ")
+
+    return value.strip()
+
+
+def get_raw_pdf_object(doc, xref):
+
+    try:
+
+        return doc.xref_object(
+            xref,
+            compressed=False
+        )
+
+    except Exception:
+
+        return ""
+
+
+def extract_comment_text(info, raw_object):
+
+    candidates = []
+
+    candidates.append(
+        clean_value(
+            info.get("content", "")
+        )
+    )
+
+    candidates.append(
+        clean_value(
+            info.get("subject", "")
+        )
+    )
+
+    candidates.append(
+        clean_value(
+            info.get("title", "")
+        )
+    )
+
+    for value in candidates:
+
+        if value:
+            return value
+
+    if raw_object:
+
+        for marker in [
+            "/Contents",
+            "/Subj"
+        ]:
+
+            pos = raw_object.find(marker)
+
+            if pos >= 0:
+
+                snippet = raw_object[
+                    pos:
+                    pos + 500
+                ]
+
+                return snippet
+
+    return ""
+
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+
 if uploaded_file:
 
-    pdf_data = uploaded_file.read()
+    pdf_bytes = uploaded_file.read()
 
     doc = fitz.open(
-        stream=pdf_data,
+        stream=pdf_bytes,
         filetype="pdf"
     )
 
-    IGNORE_TYPES = {
-        "Stamp",
-        "Square"
-    }
+    all_annotations = []
 
-    IGNORE_AUTHORS = {
-        "AutoCAD SHX Text"
-    }
+    for page_number in range(len(doc)):
 
-    all_comments = []
-
-    for page_num in range(len(doc)):
-
-        page = doc[page_num]
+        page = doc[page_number]
 
         annot = page.first_annot
 
@@ -47,127 +138,185 @@ if uploaded_file:
 
             try:
 
-                annot_type = annot.type[1]
+                annotation_type = annot.type[1]
 
-                if annot_type in IGNORE_TYPES:
+                if annotation_type in IGNORE_TYPES:
+
                     annot = annot.next
                     continue
 
                 info = annot.info or {}
 
-                author = str(
+                author = clean_value(
                     info.get("title", "")
-                ).strip()
+                )
 
                 if author in IGNORE_AUTHORS:
+
                     annot = annot.next
                     continue
 
-                subject = str(
-                    info.get("subject", "")
-                ).strip()
-
-                content = str(
-                    info.get("content", "")
-                ).strip()
-
-                creation_date = str(
-                    info.get("creationDate", "")
-                ).strip()
-
-                comment_text = ""
-
-                if content:
-                    comment_text = content
-
-                elif subject:
-                    comment_text = subject
-
-                else:
-                    comment_text = str(info)
+                raw_object = get_raw_pdf_object(
+                    doc,
+                    annot.xref
+                )
 
                 parent_xref = None
 
                 try:
-                    parent_xref = annot.irt_xref
-                except:
-                    pass
 
-                all_comments.append({
+                    parent_xref = annot.irt_xref
+
+                except Exception:
+
+                    parent_xref = None
+
+                subject = clean_value(
+                    info.get(
+                        "subject",
+                        ""
+                    )
+                )
+
+                creation_date = clean_value(
+                    info.get(
+                        "creationDate",
+                        ""
+                    )
+                )
+
+                comment_text = extract_comment_text(
+                    info,
+                    raw_object
+                )
+
+                all_annotations.append({
+
                     "xref": annot.xref,
+
                     "reply_to": parent_xref,
-                    "page": page_num + 1,
+
+                    "page": page_number + 1,
+
                     "author": author,
-                    "type": annot_type,
+
+                    "type": annotation_type,
+
                     "subject": subject,
+
                     "comment": comment_text,
+
+                    "raw_object": raw_object,
+
                     "date": creation_date
+
                 })
 
             except Exception as ex:
 
-                all_comments.append({
+                all_annotations.append({
+
                     "xref": None,
+
                     "reply_to": None,
-                    "page": page_num + 1,
+
+                    "page": page_number + 1,
+
                     "author": "",
+
                     "type": "ERROR",
+
                     "subject": "",
+
                     "comment": str(ex),
+
+                    "raw_object": "",
+
                     "date": ""
+
                 })
 
             annot = annot.next
 
-    comment_map = {}
-
-    for item in all_comments:
-
-        comment_map[item["xref"]] = item
+    # --------------------------------------
+    # Build reply chains
+    # --------------------------------------
 
     results = []
 
-    for item in all_comments:
+    for item in all_annotations:
 
         if item["reply_to"] is not None:
             continue
 
-        replies = []
-        replied_by = []
+        reply_comments = []
 
-        for child in all_comments:
+        reply_authors = []
+
+        reply_dates = []
+
+        for child in all_annotations:
 
             if child["reply_to"] == item["xref"]:
 
-                replies.append(
-                    child["comment"]
-                )
+                if child["comment"]:
 
-                replied_by.append(
-                    child["author"]
-                )
+                    reply_comments.append(
+                        child["comment"]
+                    )
+
+                if child["author"]:
+
+                    reply_authors.append(
+                        child["author"]
+                    )
+
+                if child["date"]:
+
+                    reply_dates.append(
+                        child["date"]
+                    )
 
         results.append({
 
-            "Page": item["page"],
+            "Page":
+                item["page"],
 
-            "Author": item["author"],
+            "Author":
+                item["author"],
 
-            "Type": item["type"],
+            "Type":
+                item["type"],
 
-            "Subject": item["subject"],
+            "Subject":
+                item["subject"],
 
-            "Comment": item["comment"],
+            "Comment":
+                item["comment"],
 
-            "Response Count": len(replies),
+            "Response Count":
+                len(reply_comments),
 
             "Responses":
-                "\n\n-------------------\n\n".join(replies),
+                "\n\n====================\n\n".join(
+                    reply_comments
+                ),
 
             "Responded By":
-                "\n".join(replied_by),
+                "\n".join(
+                    reply_authors
+                ),
 
-            "Date": item["date"]
+            "Response Dates":
+                "\n".join(
+                    reply_dates
+                ),
+
+            "Date":
+                item["date"],
+
+            "XREF":
+                item["xref"]
 
         })
 
@@ -182,6 +331,10 @@ if uploaded_file:
         use_container_width=True
     )
 
+    # --------------------------------------
+    # Export Excel
+    # --------------------------------------
+
     excel_buffer = BytesIO()
 
     with pd.ExcelWriter(
@@ -191,24 +344,26 @@ if uploaded_file:
 
         df.to_excel(
             writer,
-            index=False,
-            sheet_name="Comments"
+            sheet_name="Comments",
+            index=False
         )
 
     excel_buffer.seek(0)
 
-    wb = load_workbook(excel_buffer)
+    wb = load_workbook(
+        excel_buffer
+    )
 
     ws = wb["Comments"]
 
-    dark_fill = PatternFill(
+    header_fill = PatternFill(
         fill_type="solid",
         fgColor="1F4E78"
     )
 
     for cell in ws[1]:
 
-        cell.fill = dark_fill
+        cell.fill = header_fill
 
         cell.font = Font(
             bold=True,
@@ -230,42 +385,48 @@ if uploaded_file:
                 vertical="top"
             )
 
-    for column in ws.columns:
+    for col in ws.columns:
 
-        max_length = 0
+        max_len = 0
 
-        letter = column[0].column_letter
+        col_letter = (
+            col[0].column_letter
+        )
 
-        for cell in column:
+        for cell in col:
 
             try:
 
-                value = str(cell.value)
+                length = len(
+                    str(cell.value)
+                )
 
-                if len(value) > max_length:
-                    max_length = len(value)
+                if length > max_len:
 
-            except:
+                    max_len = length
+
+            except Exception:
+
                 pass
 
         ws.column_dimensions[
-            letter
+            col_letter
         ].width = min(
-            max_length + 5,
+            max_len + 5,
             100
         )
 
     ws.freeze_panes = "A2"
 
-    final_excel = BytesIO()
+    output = BytesIO()
 
-    wb.save(final_excel)
+    wb.save(output)
 
-    final_excel.seek(0)
+    output.seek(0)
 
     st.download_button(
         label="Download Excel",
-        data=final_excel,
+        data=output,
         file_name="PDF_Comments.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
