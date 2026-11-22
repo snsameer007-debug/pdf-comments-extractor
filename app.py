@@ -5,12 +5,15 @@ import pandas as pd
 from io import BytesIO
 
 from openpyxl import load_workbook
-
 from openpyxl.styles import (
     Alignment,
     Font,
     PatternFill
 )
+
+# --------------------------------------------------------
+# PAGE
+# --------------------------------------------------------
 
 st.set_page_config(
     page_title="PDF Comment Extractor",
@@ -20,13 +23,13 @@ st.set_page_config(
 st.title("PDF Comment Extractor")
 
 uploaded_file = st.file_uploader(
-    "Upload PDF",
+    "Upload PDF File",
     type=["pdf"]
 )
 
-# --------------------------------------------------
-# Helper Functions
-# --------------------------------------------------
+# --------------------------------------------------------
+# SETTINGS
+# --------------------------------------------------------
 
 IGNORE_TYPES = {
     "Stamp",
@@ -37,104 +40,78 @@ IGNORE_AUTHORS = {
     "AutoCAD SHX Text"
 }
 
+# --------------------------------------------------------
+# HELPERS
+# --------------------------------------------------------
 
-def clean_value(value):
+
+def safe_text(value):
 
     if value is None:
         return ""
 
-    value = str(value)
-
-    value = value.replace("\r", " ")
-    value = value.replace("\n", " ")
-
-    return value.strip()
-
-
-def get_raw_pdf_object(doc, xref):
-
-    try:
-
-        return doc.xref_object(
-            xref,
-            compressed=False
-        )
-
-    except Exception:
-
-        return ""
+    return str(value).replace(
+        "\r",
+        " "
+    ).replace(
+        "\n",
+        " "
+    ).strip()
 
 
-def extract_comment_text(info, raw_object):
+def get_comment_text(info):
 
-    candidates = []
-
-    candidates.append(
-        clean_value(
-            info.get("content", "")
-        )
+    content = safe_text(
+        info.get("content", "")
     )
 
-    candidates.append(
-        clean_value(
-            info.get("subject", "")
-        )
+    subject = safe_text(
+        info.get("subject", "")
     )
 
-    candidates.append(
-        clean_value(
-            info.get("title", "")
-        )
-    )
+    if content:
+        return content
 
-    for value in candidates:
-
-        if value:
-            return value
-
-    if raw_object:
-
-        for marker in [
-            "/Contents",
-            "/Subj"
-        ]:
-
-            pos = raw_object.find(marker)
-
-            if pos >= 0:
-
-                snippet = raw_object[
-                    pos:
-                    pos + 500
-                ]
-
-                return snippet
+    if subject:
+        return subject
 
     return ""
 
 
-# --------------------------------------------------
-# Main
-# --------------------------------------------------
+# --------------------------------------------------------
+# MAIN
+# --------------------------------------------------------
 
 if uploaded_file:
 
     pdf_bytes = uploaded_file.read()
 
-    doc = fitz.open(
-        stream=pdf_bytes,
-        filetype="pdf"
-    )
+    try:
 
-    all_annotations = []
+        doc = fitz.open(
+            stream=pdf_bytes,
+            filetype="pdf"
+        )
 
-    for page_number in range(len(doc)):
+    except Exception as ex:
 
-        page = doc[page_number]
+        st.error(
+            f"Cannot open PDF: {ex}"
+        )
+
+        st.stop()
+
+    comments = []
+
+    for page_index in range(len(doc)):
+
+        page = doc[page_index]
 
         annot = page.first_annot
 
         while annot:
+
+            next_annot = annot.next
 
             try:
 
@@ -142,85 +119,91 @@ if uploaded_file:
 
                 if annotation_type in IGNORE_TYPES:
 
-                    annot = annot.next
+                    annot = next_annot
                     continue
 
                 info = annot.info or {}
 
-                author = clean_value(
-                    info.get("title", "")
+                author = safe_text(
+                    info.get(
+                        "title",
+                        ""
+                    )
                 )
 
                 if author in IGNORE_AUTHORS:
 
-                    annot = annot.next
+                    annot = next_annot
                     continue
 
-                raw_object = get_raw_pdf_object(
-                    doc,
-                    annot.xref
-                )
-
-                parent_xref = None
-
-                try:
-
-                    parent_xref = annot.irt_xref
-
-                except Exception:
-
-                    parent_xref = None
-
-                subject = clean_value(
+                subject = safe_text(
                     info.get(
                         "subject",
                         ""
                     )
                 )
 
-                creation_date = clean_value(
+                comment = get_comment_text(
+                    info
+                )
+
+                creation_date = safe_text(
                     info.get(
                         "creationDate",
                         ""
                     )
                 )
 
-                comment_text = extract_comment_text(
-                    info,
-                    raw_object
-                )
+                reply_to = None
 
-                all_annotations.append({
+                try:
 
-                    "xref": annot.xref,
+                    if annot.irt_xref > 0:
 
-                    "reply_to": parent_xref,
+                        reply_to = annot.irt_xref
 
-                    "page": page_number + 1,
+                except Exception:
 
-                    "author": author,
+                    pass
 
-                    "type": annotation_type,
+                comments.append({
 
-                    "subject": subject,
+                    "xref":
+                        annot.xref,
 
-                    "comment": comment_text,
+                    "reply_to":
+                        reply_to,
 
-                    "raw_object": raw_object,
+                    "page":
+                        page_index + 1,
 
-                    "date": creation_date
+                    "author":
+                        author,
+
+                    "type":
+                        annotation_type,
+
+                    "subject":
+                        subject,
+
+                    "comment":
+                        comment,
+
+                    "date":
+                        creation_date
 
                 })
 
             except Exception as ex:
 
-                all_annotations.append({
+                comments.append({
 
-                    "xref": None,
+                    "xref": 0,
 
                     "reply_to": None,
 
-                    "page": page_number + 1,
+                    "page":
+                        page_index + 1,
 
                     "author": "",
 
@@ -230,38 +213,31 @@ if uploaded_file:
 
                     "comment": str(ex),
 
-                    "raw_object": "",
-
                     "date": ""
 
                 })
 
-            annot = annot.next
-
-    # --------------------------------------
-    # Build reply chains
-    # --------------------------------------
+            annot = next_annot
 
     results = []
 
-    for item in all_annotations:
+    for parent in comments:
 
-        if item["reply_to"] is not None:
+        if parent["reply_to"] is not None:
+
             continue
 
-        reply_comments = []
+        replies = []
 
         reply_authors = []
 
-        reply_dates = []
+        for child in comments:
 
-        for child in all_annotations:
-
-            if child["reply_to"] == item["xref"]:
+            if child["reply_to"] == parent["xref"]:
 
                 if child["comment"]:
 
-                    reply_comments.append(
+                    replies.append(
                         child["comment"]
                     )
 
@@ -271,35 +247,29 @@ if uploaded_file:
                         child["author"]
                     )
 
-                if child["date"]:
-
-                    reply_dates.append(
-                        child["date"]
-                    )
-
         results.append({
 
             "Page":
-                item["page"],
+                parent["page"],
 
             "Author":
-                item["author"],
+                parent["author"],
 
             "Type":
-                item["type"],
+                parent["type"],
 
             "Subject":
-                item["subject"],
+                parent["subject"],
 
             "Comment":
-                item["comment"],
+                parent["comment"],
 
-            "Response Count":
-                len(reply_comments),
+            "Reply Count":
+                len(replies),
 
             "Responses":
-                "\n\n====================\n\n".join(
-                    reply_comments
+                "\n\n-----------------\n\n".join(
+                    replies
                 ),
 
             "Responded By":
@@ -307,20 +277,14 @@ if uploaded_file:
                     reply_authors
                 ),
 
-            "Response Dates":
-                "\n".join(
-                    reply_dates
-                ),
-
             "Date":
-                item["date"],
-
-            "XREF":
-                item["xref"]
+                parent["date"]
 
         })
 
-    df = pd.DataFrame(results)
+    df = pd.DataFrame(
+        results
+    )
 
     st.success(
         f"{len(df)} comments extracted"
@@ -328,12 +292,12 @@ if uploaded_file:
 
     st.dataframe(
         df,
-        use_container_width=True
+           use_container_width=True
     )
 
-    # --------------------------------------
-    # Export Excel
-    # --------------------------------------
+ # ----------------------------------------------------
+    # EXCEL
+    # ----------------------------------------------------
 
     excel_buffer = BytesIO()
 
@@ -344,8 +308,8 @@ if uploaded_file:
 
         df.to_excel(
             writer,
-            sheet_name="Comments",
-            index=False
+            index=False,
+            sheet_name="Comments"
         )
 
     excel_buffer.seek(0)
@@ -371,9 +335,9 @@ if uploaded_file:
         )
 
         cell.alignment = Alignment(
-            wrap_text=True,
             horizontal="center",
-            vertical="center"
+            vertical="center",
+            wrap_text=True
         )
 
     for row in ws.iter_rows():
@@ -385,15 +349,13 @@ if uploaded_file:
                 vertical="top"
             )
 
-    for col in ws.columns:
+    for column in ws.columns:
 
-        max_len = 0
+        maximum = 0
 
-        col_letter = (
-            col[0].column_letter
-        )
+        letter = column[0].column_letter
 
-        for cell in col:
+        for cell in column:
 
             try:
 
@@ -401,32 +363,39 @@ if uploaded_file:
                     str(cell.value)
                 )
 
-                if length > max_len:
+                if length > maximum:
 
-                    max_len = length
+                    maximum = length
 
-            except Exception:
+            except:
 
                 pass
 
         ws.column_dimensions[
-            col_letter
+            letter
         ].width = min(
-            max_len + 5,
-            100
+            maximum + 5,
+            80
         )
 
     ws.freeze_panes = "A2"
 
     output = BytesIO()
 
-    wb.save(output)
+    wb.save(
+        output
+    )
 
     output.seek(0)
 
     st.download_button(
+
         label="Download Excel",
+
         data=output,
+
         file_name="PDF_Comments.xlsx",
+
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
     )
